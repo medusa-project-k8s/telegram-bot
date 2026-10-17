@@ -1,19 +1,14 @@
-import os
-from dotenv import load_dotenv, find_dotenv
-from aiogram import Router, F
+import logging
+
+from aiogram import Router, F, Bot, html
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message, CallbackQuery
-from keyboards.menu import send_start_menu, end_chat_button_user
+from keyboards.menu import send_start_menu
 from aiogram.filters import Command
+from config import ADMINS
 from utils.chat_router import *
+from utils.notify import safe_send
 from aiogram.utils.keyboard import InlineKeyboardButton, InlineKeyboardMarkup
-
-load_dotenv()
-
-ADMINS = [
-    int(admin_id.strip())
-    for admin_id in os.getenv("ADMINS", "").split(",")
-    if admin_id.strip().isdigit()
-]
 
 user_router = Router()
 
@@ -27,57 +22,67 @@ async def contact_admin(callback: CallbackQuery):
     user = callback.from_user
     if is_user_busy(user.id):
         await callback.message.answer("🟢 Ви вже перебуваєте в активному чаті.")
-    elif get_admin_for_user(user.id):
+    elif is_waiting(user.id):
         await callback.message.answer("🕓 Ваш запит вже надіслано. Очікуйте відповіді.")
+    elif not ADMINS:
+        await callback.message.answer("⚠️ Наразі жоден адміністратор не активний. Спробуйте пізніше.")
     else:
         request_chat(user.id)
 
-        if not ADMINS:
-            await callback.message.answer("⚠️ Наразі жоден адміністратор не активний. Спробуйте пізніше.")
-            return
-
+        username = f" @{user.username}" if user.username else ""
         for admin_id in ADMINS:
-            await callback.bot.send_message(
+            await safe_send(
+                callback.bot,
                 admin_id,
-                f"📥 Користувач @{user.username or user.first_name} (ID: {user.id}) хоче поспілкуватися.\n"
+                f"📥 Користувач {html.quote(user.full_name)}{username} (ID: {user.id}) хоче поспілкуватися.\n"
                 f"Щоб розпочати чат: /chat_{user.id}"
             )
 
-        await callback.message.answer("✅ Запит надіслано. Очікуйте відповіді адміністратора.")
+        await callback.message.answer(
+            "✅ Запит надіслано. Можете вже описати своє питання — "
+            "повідомлення будуть передані адміністратору, щойно він підключиться."
+        )
     await callback.answer()
+
+
+async def end_user_chat(bot: Bot, user_id: int, reply):
+    admin_id = end_chat_by_user(user_id)
+    if admin_id:
+        await reply("🔕 Ви завершили чат.")
+        await safe_send(bot, admin_id, f"❌ Користувач {user_id} завершив чат.")
+    elif cancel_request(user_id):
+        await reply("🔕 Ваш запит до адміністратора скасовано.")
+    else:
+        await reply("У вас немає активного чату.")
 
 
 @user_router.message(Command("stop"))
 async def stop_chat_command(message: Message):
-    user_id = message.from_user.id
-    admin_id = end_chat_by_user(user_id)
-
-    if admin_id:
-        await message.answer("🔕 Ви завершили чат.")
-        await message.bot.send_message(admin_id, f"❌ Користувач {user_id} завершив чат.")
-    else:
-        await message.answer("У вас немає активного чату.")
+    await end_user_chat(message.bot, message.from_user.id, message.answer)
 
 
 @user_router.callback_query(F.data == "user_end_chat")
 async def user_ends_chat(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    admin_id = end_chat_by_user(user_id)
-    if admin_id:
-        await callback.message.answer("🔕 Ви завершили чат.")
-        await callback.bot.send_message(admin_id, f"❌ Користувач {user_id} завершив чат.")
-    else:
-        await callback.message.answer("У вас немає активного чату.")
+    await end_user_chat(callback.bot, callback.from_user.id, callback.message.answer)
     await callback.answer()
 
 
-@user_router.message(F.text & ~F.from_user.id.in_(ADMINS))
+# Пересилає адміну будь-які повідомлення: текст, фото, файли, голосові тощо
+@user_router.message(~F.from_user.id.in_(ADMINS))
 async def forward_to_admin(message: Message):
     user_id = message.from_user.id
-    username = message.from_user.username
     admin_id = get_admin_for_user(user_id)
     if admin_id:
-        await message.bot.send_message(admin_id, f"👤 {username}:\n{message.text}")
+        try:
+            await message.copy_to(admin_id)
+        except TelegramAPIError as e:
+            logging.warning(f"Не вдалося переслати повідомлення від {user_id} адміну {admin_id}: {e}")
+            await message.answer("⚠️ Не вдалося доставити повідомлення. Спробуйте ще раз.")
+    elif is_waiting(user_id):
+        if buffer_message(user_id, message.message_id) == 1:
+            await message.answer("🕓 Адміністратор ще не підключився. Ваше повідомлення буде передано, щойно він приєднається.")
+    else:
+        await message.answer("Щоб написати адміністратору, натисніть «💬 Зв’язатися з адміністратором» у меню /start.")
 
 
 @user_router.callback_query(F.data == "faq")

@@ -1,16 +1,8 @@
-import os
-
-from dotenv import load_dotenv
 from aiogram.filters import Filter
 from aiogram import types
 
-load_dotenv()
+from config import ADMINS
 
-ADMINS = [
-    int(admin_id.strip())
-    for admin_id in os.getenv("ADMINS", "").split(",")
-    if admin_id.strip().isdigit()
-]
 
 class ChatTypeFilter(Filter):
     def __init__(self, chat_types: list[str]) -> None:

@@ -1,24 +1,12 @@
-import os
 import asyncio
 import logging
 
-from dotenv import load_dotenv, find_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from aiogram.client.default import DefaultBotProperties
+from config import ADMINS, BOT_TOKEN
 from handlers import user, admin
-from filters.admin_filter import ChatTypeFilter, IsAdmin
-
-load_dotenv()
-
-ADMINS = [
-    int(admin_id.strip())
-    for admin_id in os.getenv("ADMINS", "").split(",")
-    if admin_id.strip().isdigit()
-]
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Логирование
 logging.basicConfig(level=logging.DEBUG)
@@ -30,9 +18,6 @@ async def main():
     )
 
     dp = Dispatcher()
-
-    # Применить фильтры к admin_router
-    admin.admin_router.message.filter(ChatTypeFilter(["private"]), IsAdmin())
 
     # Регистрация роутеров
     dp.include_router(admin.admin_router)
